@@ -262,7 +262,11 @@ def build_ham_db(force=False):
                 continue
             first_name = fields[8].strip()
             last_name = fields[10].strip()
-            last_initial = last_name[0] if last_name else ""
+            if not first_name and not last_name:
+                first_name = fields[7].strip()
+                last_initial = ""
+            else:
+                last_initial = last_name[0] if last_name else ""
             state = fields[17].strip()
             city = fields[16].strip()
             zip_code = fields[18].strip()[:5]
