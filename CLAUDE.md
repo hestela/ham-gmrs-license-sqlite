@@ -9,8 +9,12 @@ This project downloads and organizes FCC Universal Licensing System (ULS) databa
 ## Commands
 
 ```bash
-# Download FCC data files (skips if already present)
-python3 download.py
+# Download both HAM and GMRS databases (default)
+python3 license_db_manager.py
+
+# Download only one database
+python3 license_db_manager.py --ham
+python3 license_db_manager.py --gmrs
 
 # Activate virtual environment (Python 3.13)
 source venv/bin/activate
@@ -39,7 +43,7 @@ Extracted data lives in `ham/` and `gmrs/` directories. Each directory also cont
 
 ## Download Script Notes
 
-- `download.py` prefers `requests` library but falls back to `urllib` if unavailable
+- `license_db_manager.py` prefers `requests` library but falls back to `urllib` if unavailable
 - Uses a `Wget/1.21.1` User-Agent to avoid FCC server blocks
 - Retries up to 3 times with exponential backoff (1s, 2s, 4s)
 - Files are saved to the working directory as `l_amat.zip` and `l_gmrs.zip`
