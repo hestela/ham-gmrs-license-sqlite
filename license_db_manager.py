@@ -2,12 +2,13 @@
 """
 license_db_manager.py
 Downloads and extracts FCC ULS license database files.
-Usage: python3 license_db_manager.py [--ham] [--gmrs] [--force]
+Usage: python3 license_db_manager.py [--ham] [--gmrs] [--force] [--build-db]
        (defaults to both if no flags are given)
 """
 
 import argparse
 import os
+import sqlite3
 import sys
 import time
 import zipfile
@@ -23,6 +24,15 @@ LICENSES = {
         "zip": "l_gmrs.zip",
         "dest_dir": "gmrs",
     },
+}
+
+CLASS_MAP = {
+    "T": "Technician",
+    "G": "General",
+    "E": "Amateur Extra",
+    "A": "Advanced",
+    "N": "Novice",
+    "P": "Technician Plus",
 }
 
 # Use a Wget-like user agent string
@@ -158,6 +168,144 @@ def process(license_type, force=False):
     extract_dat_files(zip_path, dest_dir, force=force)
 
 
+def build_ham_db(force=False):
+    """Build ham_licenses.db from ham/AM.dat and ham/EN.dat."""
+    db_path = "ham_licenses.db"
+    am_path = os.path.join("ham", "AM.dat")
+    en_path = os.path.join("ham", "EN.dat")
+
+    for path in (am_path, en_path):
+        if not os.path.exists(path):
+            print(f"ERROR: {path} not found. Run with --ham first to extract data.", file=sys.stderr)
+            return
+
+    if os.path.exists(db_path):
+        if not force:
+            print(f"[ham] {db_path} already exists. Use --force to overwrite.")
+            return
+        os.remove(db_path)
+
+    print(f"[ham] Building {db_path}...")
+
+    # Pass 1: load operator class from AM.dat
+    am_class = {}
+    with open(am_path, "r", encoding="latin-1") as f:
+        for line in f:
+            fields = line.split("|")
+            if len(fields) > 5:
+                am_class[fields[1]] = CLASS_MAP.get(fields[5], fields[5])
+
+    print(f"[ham] Loaded {len(am_class):,} operator class records from AM.dat")
+
+    # Pass 2: stream EN.dat and insert into SQLite
+    con = sqlite3.connect(db_path)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS licensees (
+            call_sign      TEXT PRIMARY KEY,
+            first_name     TEXT,
+            last_initial   TEXT,
+            state          TEXT,
+            zip_code       TEXT,
+            operator_class TEXT
+        )
+    """)
+
+    batch = []
+    total = 0
+    with open(en_path, "r", encoding="latin-1") as f:
+        for line in f:
+            fields = line.split("|")
+            if len(fields) <= 18:
+                continue
+            license_key = fields[1]
+            call_sign = fields[4].strip()
+            if not call_sign:
+                continue
+            first_name = fields[8].strip()
+            last_name = fields[10].strip()
+            last_initial = last_name[0] if last_name else ""
+            state = fields[17].strip()
+            zip_code = fields[18].strip()[:5]
+            op_class = am_class.get(license_key, "")
+            batch.append((call_sign, first_name, last_initial, state, zip_code, op_class))
+            if len(batch) >= 10000:
+                con.executemany(
+                    "INSERT OR REPLACE INTO licensees VALUES (?,?,?,?,?,?)", batch
+                )
+                total += len(batch)
+                batch = []
+
+    if batch:
+        con.executemany("INSERT OR REPLACE INTO licensees VALUES (?,?,?,?,?,?)", batch)
+        total += len(batch)
+
+    con.commit()
+    con.close()
+    print(f"[ham] Inserted {total:,} records into {db_path}")
+
+
+def build_gmrs_db(force=False):
+    """Build gmrs_licenses.db from gmrs/EN.dat."""
+    db_path = "gmrs_licenses.db"
+    en_path = os.path.join("gmrs", "EN.dat")
+
+    if not os.path.exists(en_path):
+        print(f"ERROR: {en_path} not found. Run with --gmrs first to extract data.", file=sys.stderr)
+        return
+
+    if os.path.exists(db_path):
+        if not force:
+            print(f"[gmrs] {db_path} already exists. Use --force to overwrite.")
+            return
+        os.remove(db_path)
+
+    print(f"[gmrs] Building {db_path}...")
+
+    con = sqlite3.connect(db_path)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS licensees (
+            call_sign    TEXT PRIMARY KEY,
+            first_name   TEXT,
+            last_initial TEXT,
+            state        TEXT,
+            zip_code     TEXT
+        )
+    """)
+
+    batch = []
+    total = 0
+    with open(en_path, "r", encoding="latin-1") as f:
+        for line in f:
+            fields = line.split("|")
+            if len(fields) <= 23:
+                continue
+            call_sign = fields[4].strip()
+            if not call_sign:
+                continue
+            first_name = fields[8].strip()
+            last_name = fields[10].strip()
+            last_initial = last_name[0] if last_name else ""
+            state = fields[17].strip()
+            if fields[23].strip() == "C":
+                continue
+            zip_code = fields[18].strip()[:5]
+            batch.append((call_sign, first_name, last_initial, state, zip_code))
+            if len(batch) >= 10000:
+                con.executemany(
+                    "INSERT OR REPLACE INTO licensees VALUES (?,?,?,?,?)", batch
+                )
+                total += len(batch)
+                batch = []
+
+    if batch:
+        con.executemany("INSERT OR REPLACE INTO licensees VALUES (?,?,?,?,?)", batch)
+        total += len(batch)
+
+    con.commit()
+    con.close()
+    print(f"[gmrs] Inserted {total:,} records into {db_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Download and extract FCC ULS license databases."
@@ -165,6 +313,7 @@ def main():
     parser.add_argument("--ham", action="store_true", help="Download amateur radio (HAM) database")
     parser.add_argument("--gmrs", action="store_true", help="Download GMRS database")
     parser.add_argument("--force", action="store_true", help="Re-download ZIP and overwrite existing .dat files")
+    parser.add_argument("--build-db", action="store_true", help="Build SQLite database from extracted .dat files")
     args = parser.parse_args()
 
     # Default to both if neither flag is given
@@ -179,6 +328,12 @@ def main():
 
     for license_type in targets:
         process(license_type, force=args.force)
+
+    if args.build_db:
+        if "ham" in targets:
+            build_ham_db(force=args.force)
+        if "gmrs" in targets:
+            build_gmrs_db(force=args.force)
 
 
 if __name__ == "__main__":
