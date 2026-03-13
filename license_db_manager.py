@@ -35,6 +35,41 @@ CLASS_MAP = {
     "P": "Technician Plus",
 }
 
+def maidenhead(lat, lon):
+    """Return 6-character Maidenhead grid square for the given lat/lon."""
+    lon += 180
+    lat += 90
+    field_lon = int(lon / 20)
+    field_lat = int(lat / 10)
+    lon %= 20
+    lat %= 10
+    square_lon = int(lon / 2)
+    square_lat = int(lat)
+    lon %= 2
+    lat %= 1
+    sub_lon = int(lon * 12)
+    sub_lat = int(lat * 24)
+    return (
+        chr(ord("A") + field_lon)
+        + chr(ord("A") + field_lat)
+        + str(square_lon)
+        + str(square_lat)
+        + chr(ord("a") + sub_lon)
+        + chr(ord("a") + sub_lat)
+    )
+
+
+def build_zip_grid_cache():
+    """Return a dict mapping US zip code -> 6-char Maidenhead grid square."""
+    import pgeocode
+    nomi = pgeocode.Nominatim("us")
+    df = nomi._data_frame[["postal_code", "latitude", "longitude"]].dropna()
+    cache = {}
+    for _, row in df.iterrows():
+        cache[row["postal_code"]] = maidenhead(row["latitude"], row["longitude"])
+    return cache
+
+
 # Use a Wget-like user agent string
 HEADERS = {"User-Agent": "Wget/1.21.1 (linux-gnu)"}
 
@@ -186,6 +221,8 @@ def build_ham_db(force=False):
         os.remove(db_path)
 
     print(f"[ham] Building {db_path}...")
+    print("[ham] Loading zip code grid square cache...")
+    zip_grid = build_zip_grid_cache()
 
     # Pass 1: load operator class from AM.dat
     am_class = {}
@@ -204,9 +241,11 @@ def build_ham_db(force=False):
             call_sign      TEXT PRIMARY KEY,
             first_name     TEXT,
             last_initial   TEXT,
+            city           TEXT,
             state          TEXT,
             zip_code       TEXT,
-            operator_class TEXT
+            operator_class TEXT,
+            grid_square    TEXT
         )
     """)
 
@@ -225,18 +264,20 @@ def build_ham_db(force=False):
             last_name = fields[10].strip()
             last_initial = last_name[0] if last_name else ""
             state = fields[17].strip()
+            city = fields[16].strip()
             zip_code = fields[18].strip()[:5]
             op_class = am_class.get(license_key, "")
-            batch.append((call_sign, first_name, last_initial, state, zip_code, op_class))
+            grid_square = zip_grid.get(zip_code, "")
+            batch.append((call_sign, first_name, last_initial, city, state, zip_code, op_class, grid_square))
             if len(batch) >= 10000:
                 con.executemany(
-                    "INSERT OR REPLACE INTO licensees VALUES (?,?,?,?,?,?)", batch
+                    "INSERT OR REPLACE INTO licensees VALUES (?,?,?,?,?,?,?,?)", batch
                 )
                 total += len(batch)
                 batch = []
 
     if batch:
-        con.executemany("INSERT OR REPLACE INTO licensees VALUES (?,?,?,?,?,?)", batch)
+        con.executemany("INSERT OR REPLACE INTO licensees VALUES (?,?,?,?,?,?,?,?)", batch)
         total += len(batch)
 
     con.commit()
@@ -260,6 +301,8 @@ def build_gmrs_db(force=False):
         os.remove(db_path)
 
     print(f"[gmrs] Building {db_path}...")
+    print("[gmrs] Loading zip code grid square cache...")
+    zip_grid = build_zip_grid_cache()
 
     con = sqlite3.connect(db_path)
     con.execute("""
@@ -267,8 +310,10 @@ def build_gmrs_db(force=False):
             call_sign    TEXT PRIMARY KEY,
             first_name   TEXT,
             last_initial TEXT,
+            city         TEXT,
             state        TEXT,
-            zip_code     TEXT
+            zip_code     TEXT,
+            grid_square  TEXT
         )
     """)
 
@@ -288,17 +333,19 @@ def build_gmrs_db(force=False):
             state = fields[17].strip()
             if fields[23].strip() != "I":
                 continue
+            city = fields[16].strip()
             zip_code = fields[18].strip()[:5]
-            batch.append((call_sign, first_name, last_initial, state, zip_code))
+            grid_square = zip_grid.get(zip_code, "")
+            batch.append((call_sign, first_name, last_initial, city, state, zip_code, grid_square))
             if len(batch) >= 10000:
                 con.executemany(
-                    "INSERT OR REPLACE INTO licensees VALUES (?,?,?,?,?)", batch
+                    "INSERT OR REPLACE INTO licensees VALUES (?,?,?,?,?,?,?)", batch
                 )
                 total += len(batch)
                 batch = []
 
     if batch:
-        con.executemany("INSERT OR REPLACE INTO licensees VALUES (?,?,?,?,?)", batch)
+        con.executemany("INSERT OR REPLACE INTO licensees VALUES (?,?,?,?,?,?,?)", batch)
         total += len(batch)
 
     con.commit()
