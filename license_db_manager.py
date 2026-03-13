@@ -286,7 +286,7 @@ def build_gmrs_db(force=False):
             last_name = fields[10].strip()
             last_initial = last_name[0] if last_name else ""
             state = fields[17].strip()
-            if fields[23].strip() == "C":
+            if fields[23].strip() != "I":
                 continue
             zip_code = fields[18].strip()[:5]
             batch.append((call_sign, first_name, last_initial, state, zip_code))
