@@ -8,24 +8,26 @@ the SQL table by default will provide:
 - grid square (calculated from zip code)
 - license type (individual, government, club, etc)
 - status (expired, active, cancelled)
-Optionally includes:
+
+Optionally includes:  
 - Address
 - Last name
 
 ## Requirements
-- Python 3.13
-- `pgeocode` (for Maidenhead grid square lookup)
-- `requests` (optional, falls back to `urllib` if not available)
 
-Install dependencies:
 
-```
+
+## Usage
+Install dependencies (only needed once):
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Usage
-
-```
+```bash
+source venv/bin/activate
 python3 license_db_manager.py [--ham] [--gmrs] [--force] [--build-db] [--extended-info]
 ```
 
