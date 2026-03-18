@@ -221,7 +221,7 @@ def load_hd_status(hd_path):
     return status
 
 
-def build_ham_db(force=False):
+def build_ham_db(force=False, extended_info=False):
     """Build ham_licenses.db from ham/AM.dat, ham/HD.dat, and ham/EN.dat."""
     db_path = "ham_licenses.db"
     am_path = os.path.join("ham", "AM.dat")
@@ -234,9 +234,6 @@ def build_ham_db(force=False):
             return
 
     if os.path.exists(db_path):
-        if not force:
-            print(f"[ham] {db_path} already exists. Use --force to overwrite.")
-            return
         os.remove(db_path)
 
     print(f"[ham] Building {db_path}...")
@@ -259,7 +256,8 @@ def build_ham_db(force=False):
 
     # Pass 3: stream EN.dat and insert into SQLite
     con = sqlite3.connect(db_path)
-    con.execute("""
+    extended_cols = ",\n            last_name      TEXT,\n            address        TEXT" if extended_info else ""
+    con.execute(f"""
         CREATE TABLE IF NOT EXISTS licensees (
             call_sign      TEXT PRIMARY KEY,
             first_name     TEXT,
@@ -269,10 +267,11 @@ def build_ham_db(force=False):
             zip_code       TEXT,
             operator_class TEXT,
             grid_square    TEXT,
-            status         TEXT
+            status         TEXT{extended_cols}
         )
     """)
 
+    placeholders = "?,?,?,?,?,?,?,?,?,?,?" if extended_info else "?,?,?,?,?,?,?,?,?"
     batch = []
     total = 0
     with open(en_path, "r", encoding="latin-1") as f:
@@ -287,6 +286,7 @@ def build_ham_db(force=False):
             if fields[23].strip() != "I":
                 first_name = fields[7].strip()
                 last_initial = ""
+                last_name = ""
             else:
                 first_name = fields[8].strip()
                 last_name = fields[10].strip()
@@ -297,16 +297,17 @@ def build_ham_db(force=False):
             op_class = am_class.get(license_key, "")
             grid_square = zip_grid.get(zip_code, "")
             status = hd_status.get(license_key, "")
-            batch.append((call_sign, first_name, last_initial, city, state, zip_code, op_class, grid_square, status))
+            row = (call_sign, first_name, last_initial, city, state, zip_code, op_class, grid_square, status)
+            if extended_info:
+                row += (last_name, fields[15].strip())
+            batch.append(row)
             if len(batch) >= 10000:
-                con.executemany(
-                    "INSERT OR REPLACE INTO licensees VALUES (?,?,?,?,?,?,?,?,?)", batch
-                )
+                con.executemany(f"INSERT OR REPLACE INTO licensees VALUES ({placeholders})", batch)
                 total += len(batch)
                 batch = []
 
     if batch:
-        con.executemany("INSERT OR REPLACE INTO licensees VALUES (?,?,?,?,?,?,?,?,?)", batch)
+        con.executemany(f"INSERT OR REPLACE INTO licensees VALUES ({placeholders})", batch)
         total += len(batch)
 
     con.commit()
@@ -314,7 +315,7 @@ def build_ham_db(force=False):
     print(f"[ham] Inserted {total:,} records into {db_path}")
 
 
-def build_gmrs_db(force=False):
+def build_gmrs_db(force=False, extended_info=False):
     """Build gmrs_licenses.db from gmrs/EN.dat and gmrs/HD.dat."""
     db_path = "gmrs_licenses.db"
     en_path = os.path.join("gmrs", "EN.dat")
@@ -326,9 +327,6 @@ def build_gmrs_db(force=False):
             return
 
     if os.path.exists(db_path):
-        if not force:
-            print(f"[gmrs] {db_path} already exists. Use --force to overwrite.")
-            return
         os.remove(db_path)
 
     print(f"[gmrs] Building {db_path}...")
@@ -339,7 +337,8 @@ def build_gmrs_db(force=False):
     print(f"[gmrs] Loaded {len(hd_status):,} status records from HD.dat")
 
     con = sqlite3.connect(db_path)
-    con.execute("""
+    extended_cols = ",\n            last_name    TEXT,\n            address      TEXT" if extended_info else ""
+    con.execute(f"""
         CREATE TABLE IF NOT EXISTS licensees (
             call_sign    TEXT PRIMARY KEY,
             first_name   TEXT,
@@ -348,10 +347,11 @@ def build_gmrs_db(force=False):
             state        TEXT,
             zip_code     TEXT,
             grid_square  TEXT,
-            status       TEXT
+            status       TEXT{extended_cols}
         )
     """)
 
+    placeholders = "?,?,?,?,?,?,?,?,?,?" if extended_info else "?,?,?,?,?,?,?,?"
     batch = []
     total = 0
     with open(en_path, "r", encoding="latin-1") as f:
@@ -373,16 +373,17 @@ def build_gmrs_db(force=False):
             grid_square = zip_grid.get(zip_code, "")
             license_key = fields[1]
             status = hd_status.get(license_key, "")
-            batch.append((call_sign, first_name, last_initial, city, state, zip_code, grid_square, status))
+            row = (call_sign, first_name, last_initial, city, state, zip_code, grid_square, status)
+            if extended_info:
+                row += (last_name, fields[15].strip())
+            batch.append(row)
             if len(batch) >= 10000:
-                con.executemany(
-                    "INSERT OR REPLACE INTO licensees VALUES (?,?,?,?,?,?,?,?)", batch
-                )
+                con.executemany(f"INSERT OR REPLACE INTO licensees VALUES ({placeholders})", batch)
                 total += len(batch)
                 batch = []
 
     if batch:
-        con.executemany("INSERT OR REPLACE INTO licensees VALUES (?,?,?,?,?,?,?,?)", batch)
+        con.executemany(f"INSERT OR REPLACE INTO licensees VALUES ({placeholders})", batch)
         total += len(batch)
 
     con.commit()
@@ -398,6 +399,7 @@ def main():
     parser.add_argument("--gmrs", action="store_true", help="Download GMRS database")
     parser.add_argument("--force", action="store_true", help="Re-download ZIP and overwrite existing .dat files")
     parser.add_argument("--build-db", action="store_true", help="Build SQLite database from extracted .dat files")
+    parser.add_argument("--extended-info", action="store_true", help="Include full last name and street address in the database")
     args = parser.parse_args()
 
     # Default to both if neither flag is given
@@ -415,9 +417,9 @@ def main():
 
     if args.build_db:
         if "ham" in targets:
-            build_ham_db(force=args.force)
+            build_ham_db(force=args.force, extended_info=args.extended_info)
         if "gmrs" in targets:
-            build_gmrs_db(force=args.force)
+            build_gmrs_db(force=args.force, extended_info=args.extended_info)
 
 
 if __name__ == "__main__":
