@@ -42,6 +42,34 @@ STATUS_MAP = {
     "T": "Terminated",
 }
 
+US_STATES = frozenset({
+    "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA",
+    "KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ",
+    "NM","NY","NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT",
+    "VA","WA","WV","WI","WY","DC","GU","PR","VI","AS","MP",
+})
+
+TYPE_MAP = {
+    "B": "Amateur Club",
+    "C": "Corporation",
+    "D": "General Partnership",
+    "E": "Limited Partnership",
+    "F": "Limited Liability Partnership",
+    "G": "Governmental Entity",
+    "H": "Other",
+    "I": "Individual",
+    "J": "Joint Venture",
+    "L": "Limited Liability Company",
+    "M": "Military Recreation",
+    "N": "Tribal Entity",
+    "O": "Consortium",
+    "P": "Partnership",
+    "R": "RACES",
+    "T": "Trust",
+    "U": "Unincorporated Association",
+    "Z": "Tribal Entity Controlled by a Business",
+}
+
 def maidenhead(lat, lon):
     """Return 6-character Maidenhead grid square for the given lat/lon."""
     lon += 180
@@ -221,6 +249,36 @@ def load_hd_status(hd_path):
     return status
 
 
+def parse_en_location_and_type(fields):
+    """
+    Return (city, state, zip_code, address, entity_type_code, shift) from an EN record.
+
+    Some records have embedded pipe characters in the name field, which shifts all
+    subsequent field indices. We detect this by searching for a valid US state code
+    near field [17], then scan forward for the applicant type code.
+    """
+    shift = 0
+    for offset in range(0, 8):
+        idx = 17 + offset
+        if idx < len(fields) and fields[idx].strip() in US_STATES:
+            shift = offset
+            break
+
+    city     = fields[16 + shift].strip() if 16 + shift < len(fields) else ""
+    state    = fields[17 + shift].strip() if 17 + shift < len(fields) else ""
+    zip_code = fields[18 + shift].strip()[:5] if 18 + shift < len(fields) else ""
+    address  = fields[15 + shift].strip() if 15 + shift < len(fields) else ""
+
+    entity_type_code = ""
+    for i in range(22 + shift, min(32 + shift, len(fields))):
+        val = fields[i].strip()
+        if val in TYPE_MAP:
+            entity_type_code = val
+            break
+
+    return city, state, zip_code, address, entity_type_code
+
+
 def build_ham_db(force=False, extended_info=False):
     """Build ham_licenses.db from ham/AM.dat, ham/HD.dat, and ham/EN.dat."""
     db_path = "ham_licenses.db"
@@ -267,11 +325,12 @@ def build_ham_db(force=False, extended_info=False):
             zip_code       TEXT,
             operator_class TEXT,
             grid_square    TEXT,
-            status         TEXT{extended_cols}
+            status         TEXT,
+            type           TEXT{extended_cols}
         )
     """)
 
-    placeholders = "?,?,?,?,?,?,?,?,?,?,?" if extended_info else "?,?,?,?,?,?,?,?,?"
+    placeholders = "?,?,?,?,?,?,?,?,?,?,?,?" if extended_info else "?,?,?,?,?,?,?,?,?,?"
     batch = []
     total = 0
     with open(en_path, "r", encoding="latin-1") as f:
@@ -283,7 +342,8 @@ def build_ham_db(force=False, extended_info=False):
             call_sign = fields[4].strip()
             if not call_sign:
                 continue
-            if fields[23].strip() != "I":
+            city, state, zip_code, address, entity_type = parse_en_location_and_type(fields)
+            if entity_type != "I":
                 first_name = fields[7].strip()
                 last_initial = ""
                 last_name = ""
@@ -291,15 +351,13 @@ def build_ham_db(force=False, extended_info=False):
                 first_name = fields[8].strip()
                 last_name = fields[10].strip()
                 last_initial = last_name[0] if last_name else ""
-            state = fields[17].strip()
-            city = fields[16].strip()
-            zip_code = fields[18].strip()[:5]
             op_class = am_class.get(license_key, "")
             grid_square = zip_grid.get(zip_code, "")
             status = hd_status.get(license_key, "")
-            row = (call_sign, first_name, last_initial, city, state, zip_code, op_class, grid_square, status)
+            entity_type_str = TYPE_MAP.get(entity_type, entity_type)
+            row = (call_sign, first_name, last_initial, city, state, zip_code, op_class, grid_square, status, entity_type_str)
             if extended_info:
-                row += (last_name, fields[15].strip())
+                row += (last_name, address)
             batch.append(row)
             if len(batch) >= 10000:
                 con.executemany(f"INSERT OR REPLACE INTO licensees VALUES ({placeholders})", batch)
@@ -347,11 +405,12 @@ def build_gmrs_db(force=False, extended_info=False):
             state        TEXT,
             zip_code     TEXT,
             grid_square  TEXT,
-            status       TEXT{extended_cols}
+            status       TEXT,
+            type         TEXT{extended_cols}
         )
     """)
 
-    placeholders = "?,?,?,?,?,?,?,?,?,?" if extended_info else "?,?,?,?,?,?,?,?"
+    placeholders = "?,?,?,?,?,?,?,?,?,?,?" if extended_info else "?,?,?,?,?,?,?,?,?"
     batch = []
     total = 0
     with open(en_path, "r", encoding="latin-1") as f:
@@ -362,20 +421,22 @@ def build_gmrs_db(force=False, extended_info=False):
             call_sign = fields[4].strip()
             if not call_sign:
                 continue
-            first_name = fields[8].strip()
-            last_name = fields[10].strip()
-            last_initial = last_name[0] if last_name else ""
-            state = fields[17].strip()
-            if fields[23].strip() != "I":
-                continue
-            city = fields[16].strip()
-            zip_code = fields[18].strip()[:5]
+            city, state, zip_code, address, entity_type = parse_en_location_and_type(fields)
+            if entity_type != "I":
+                first_name = fields[7].strip()
+                last_initial = ""
+                last_name = ""
+            else:
+                first_name = fields[8].strip()
+                last_name = fields[10].strip()
+                last_initial = last_name[0] if last_name else ""
             grid_square = zip_grid.get(zip_code, "")
             license_key = fields[1]
             status = hd_status.get(license_key, "")
-            row = (call_sign, first_name, last_initial, city, state, zip_code, grid_square, status)
+            entity_type_str = TYPE_MAP.get(entity_type, entity_type)
+            row = (call_sign, first_name, last_initial, city, state, zip_code, grid_square, status, entity_type_str)
             if extended_info:
-                row += (last_name, fields[15].strip())
+                row += (last_name, address)
             batch.append(row)
             if len(batch) >= 10000:
                 con.executemany(f"INSERT OR REPLACE INTO licensees VALUES ({placeholders})", batch)
