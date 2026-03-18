@@ -13,10 +13,6 @@ Optionally includes:
 - Address
 - Last name
 
-## Requirements
-
-
-
 ## Usage
 Install dependencies (only needed once):
 
