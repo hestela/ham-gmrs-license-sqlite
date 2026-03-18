@@ -35,6 +35,13 @@ CLASS_MAP = {
     "P": "Technician Plus",
 }
 
+STATUS_MAP = {
+    "A": "Active",
+    "E": "Expired",
+    "C": "Cancelled",
+    "T": "Terminated",
+}
+
 def maidenhead(lat, lon):
     """Return 6-character Maidenhead grid square for the given lat/lon."""
     lon += 180
@@ -203,13 +210,25 @@ def process(license_type, force=False):
     extract_dat_files(zip_path, dest_dir, force=force)
 
 
+def load_hd_status(hd_path):
+    """Return a dict mapping license_key -> status string from HD.dat."""
+    status = {}
+    with open(hd_path, "r", encoding="latin-1") as f:
+        for line in f:
+            fields = line.split("|")
+            if len(fields) > 5:
+                status[fields[1]] = STATUS_MAP.get(fields[5].strip(), fields[5].strip())
+    return status
+
+
 def build_ham_db(force=False):
-    """Build ham_licenses.db from ham/AM.dat and ham/EN.dat."""
+    """Build ham_licenses.db from ham/AM.dat, ham/HD.dat, and ham/EN.dat."""
     db_path = "ham_licenses.db"
     am_path = os.path.join("ham", "AM.dat")
     en_path = os.path.join("ham", "EN.dat")
+    hd_path = os.path.join("ham", "HD.dat")
 
-    for path in (am_path, en_path):
+    for path in (am_path, en_path, hd_path):
         if not os.path.exists(path):
             print(f"ERROR: {path} not found. Run with --ham first to extract data.", file=sys.stderr)
             return
@@ -234,7 +253,11 @@ def build_ham_db(force=False):
 
     print(f"[ham] Loaded {len(am_class):,} operator class records from AM.dat")
 
-    # Pass 2: stream EN.dat and insert into SQLite
+    # Pass 2: load status from HD.dat
+    hd_status = load_hd_status(hd_path)
+    print(f"[ham] Loaded {len(hd_status):,} status records from HD.dat")
+
+    # Pass 3: stream EN.dat and insert into SQLite
     con = sqlite3.connect(db_path)
     con.execute("""
         CREATE TABLE IF NOT EXISTS licensees (
@@ -245,7 +268,8 @@ def build_ham_db(force=False):
             state          TEXT,
             zip_code       TEXT,
             operator_class TEXT,
-            grid_square    TEXT
+            grid_square    TEXT,
+            status         TEXT
         )
     """)
 
@@ -254,34 +278,35 @@ def build_ham_db(force=False):
     with open(en_path, "r", encoding="latin-1") as f:
         for line in f:
             fields = line.split("|")
-            if len(fields) <= 18:
+            if len(fields) <= 24:
                 continue
             license_key = fields[1]
             call_sign = fields[4].strip()
             if not call_sign:
                 continue
-            first_name = fields[8].strip()
-            last_name = fields[10].strip()
-            if not first_name and not last_name:
+            if fields[23].strip() != "I":
                 first_name = fields[7].strip()
                 last_initial = ""
             else:
+                first_name = fields[8].strip()
+                last_name = fields[10].strip()
                 last_initial = last_name[0] if last_name else ""
             state = fields[17].strip()
             city = fields[16].strip()
             zip_code = fields[18].strip()[:5]
             op_class = am_class.get(license_key, "")
             grid_square = zip_grid.get(zip_code, "")
-            batch.append((call_sign, first_name, last_initial, city, state, zip_code, op_class, grid_square))
+            status = hd_status.get(license_key, "")
+            batch.append((call_sign, first_name, last_initial, city, state, zip_code, op_class, grid_square, status))
             if len(batch) >= 10000:
                 con.executemany(
-                    "INSERT OR REPLACE INTO licensees VALUES (?,?,?,?,?,?,?,?)", batch
+                    "INSERT OR REPLACE INTO licensees VALUES (?,?,?,?,?,?,?,?,?)", batch
                 )
                 total += len(batch)
                 batch = []
 
     if batch:
-        con.executemany("INSERT OR REPLACE INTO licensees VALUES (?,?,?,?,?,?,?,?)", batch)
+        con.executemany("INSERT OR REPLACE INTO licensees VALUES (?,?,?,?,?,?,?,?,?)", batch)
         total += len(batch)
 
     con.commit()
@@ -290,13 +315,15 @@ def build_ham_db(force=False):
 
 
 def build_gmrs_db(force=False):
-    """Build gmrs_licenses.db from gmrs/EN.dat."""
+    """Build gmrs_licenses.db from gmrs/EN.dat and gmrs/HD.dat."""
     db_path = "gmrs_licenses.db"
     en_path = os.path.join("gmrs", "EN.dat")
+    hd_path = os.path.join("gmrs", "HD.dat")
 
-    if not os.path.exists(en_path):
-        print(f"ERROR: {en_path} not found. Run with --gmrs first to extract data.", file=sys.stderr)
-        return
+    for path in (en_path, hd_path):
+        if not os.path.exists(path):
+            print(f"ERROR: {path} not found. Run with --gmrs first to extract data.", file=sys.stderr)
+            return
 
     if os.path.exists(db_path):
         if not force:
@@ -308,6 +335,9 @@ def build_gmrs_db(force=False):
     print("[gmrs] Loading zip code grid square cache...")
     zip_grid = build_zip_grid_cache()
 
+    hd_status = load_hd_status(hd_path)
+    print(f"[gmrs] Loaded {len(hd_status):,} status records from HD.dat")
+
     con = sqlite3.connect(db_path)
     con.execute("""
         CREATE TABLE IF NOT EXISTS licensees (
@@ -317,7 +347,8 @@ def build_gmrs_db(force=False):
             city         TEXT,
             state        TEXT,
             zip_code     TEXT,
-            grid_square  TEXT
+            grid_square  TEXT,
+            status       TEXT
         )
     """)
 
@@ -340,16 +371,18 @@ def build_gmrs_db(force=False):
             city = fields[16].strip()
             zip_code = fields[18].strip()[:5]
             grid_square = zip_grid.get(zip_code, "")
-            batch.append((call_sign, first_name, last_initial, city, state, zip_code, grid_square))
+            license_key = fields[1]
+            status = hd_status.get(license_key, "")
+            batch.append((call_sign, first_name, last_initial, city, state, zip_code, grid_square, status))
             if len(batch) >= 10000:
                 con.executemany(
-                    "INSERT OR REPLACE INTO licensees VALUES (?,?,?,?,?,?,?)", batch
+                    "INSERT OR REPLACE INTO licensees VALUES (?,?,?,?,?,?,?,?)", batch
                 )
                 total += len(batch)
                 batch = []
 
     if batch:
-        con.executemany("INSERT OR REPLACE INTO licensees VALUES (?,?,?,?,?,?,?)", batch)
+        con.executemany("INSERT OR REPLACE INTO licensees VALUES (?,?,?,?,?,?,?,?)", batch)
         total += len(batch)
 
     con.commit()
