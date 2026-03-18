@@ -22,6 +22,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
+Run script:
 ```bash
 source venv/bin/activate
 python3 license_db_manager.py [--ham] [--gmrs] [--force] [--build-db] [--extended-info]
